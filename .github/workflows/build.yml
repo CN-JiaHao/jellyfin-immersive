@@ -131,15 +131,15 @@ jobs:
 
         def insert(match, new_line, before):
             hits = [i for i, l in enumerate(lines) if l.strip() == match]
-            if len(hits) != 1:
-                sys.exit(f"找不到要修改的位置: {match} (找到 {len(hits)} 处)")
-            i = hits[0]
-            indent = re.match(r"\s*", lines[i]).group(0)
-            lines.insert(i if before else i + 1, indent + new_line)
+            if not hits:
+                sys.exit(f"找不到要修改的位置: {match}")
+            for i in reversed(hits):
+                indent = re.match(r"\s*", lines[i]).group(0)
+                lines.insert(i if before else i + 1, indent + new_line)
 
-        insert("webView.initialize()",
-               'webView.addJavascriptInterface(SystemBarColorBridge(requireActivity(), webView), "NativeSystemBars")',
-               before=True)
+        insert("settings.applyDefault()",
+               'addJavascriptInterface(SystemBarColorBridge(requireActivity(), this), "NativeSystemBars")',
+               before=False)
         insert("webView.fadeIn()",
                "webView.evaluateJavascript(SystemBarColorBridge.SCRIPT, null)",
                before=False)
