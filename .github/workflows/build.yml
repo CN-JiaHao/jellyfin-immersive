@@ -1,0 +1,169 @@
+name: 打包沉浸状态栏版 Jellyfin
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 下载官方源代码（和你手机上的版本一致）
+      uses: actions/checkout@v4
+      with:
+        repository: jellyfin/jellyfin-android
+        ref: 9a5f9be6a76da47ca07733b982a12dbd0f75539b
+        path: src
+    - name: 添加状态栏变色代码
+      run: |
+        cat > src/app/src/main/java/org/jellyfin/mobile/webapp/SystemBarColorBridge.kt <<'KT'
+        package org.jellyfin.mobile.webapp
+
+        import android.app.Activity
+        import android.graphics.Canvas
+        import android.graphics.ColorFilter
+        import android.graphics.Paint
+        import android.graphics.PixelFormat
+        import android.graphics.drawable.Drawable
+        import android.view.View
+        import android.webkit.JavascriptInterface
+        import android.webkit.WebView
+        import androidx.core.graphics.ColorUtils
+        import androidx.core.view.WindowCompat
+
+        /**
+         * Paints the status bar / navigation bar area with the colour of the web page
+         * and switches the system bar icons between light and dark automatically.
+         */
+        class SystemBarColorBridge(
+            private val activity: Activity,
+            private val webView: WebView,
+        ) {
+            private val barBackground = SplitColorDrawable()
+
+            @JavascriptInterface
+            fun setColors(top: Int, bottom: Int) {
+                val opaque = 0xFF000000.toInt()
+                webView.post { apply(top or opaque, bottom or opaque) }
+            }
+
+            private fun apply(top: Int, bottom: Int) {
+                if (!webView.isAttachedToWindow || !webView.isShown) return
+                val parent = webView.parent as? View ?: return
+                if (parent.background !== barBackground) parent.background = barBackground
+                barBackground.setColors(top, bottom)
+                val window = activity.window
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.isAppearanceLightStatusBars = ColorUtils.calculateLuminance(top) > 0.5
+                controller.isAppearanceLightNavigationBars = ColorUtils.calculateLuminance(bottom) > 0.5
+            }
+
+            private class SplitColorDrawable : Drawable() {
+                private val topPaint = Paint()
+                private val bottomPaint = Paint()
+
+                fun setColors(top: Int, bottom: Int) {
+                    if (topPaint.color == top && bottomPaint.color == bottom) return
+                    topPaint.color = top
+                    bottomPaint.color = bottom
+                    invalidateSelf()
+                }
+
+                override fun draw(canvas: Canvas) {
+                    val b = bounds
+                    val mid = b.top + b.height() / 2f
+                    canvas.drawRect(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), mid, topPaint)
+                    canvas.drawRect(b.left.toFloat(), mid, b.right.toFloat(), b.bottom.toFloat(), bottomPaint)
+                }
+
+                override fun setAlpha(alpha: Int) = Unit
+
+                override fun setColorFilter(colorFilter: ColorFilter?) = Unit
+
+                @Deprecated("Deprecated in Java")
+                override fun getOpacity(): Int = PixelFormat.OPAQUE
+            }
+
+            companion object {
+                const val SCRIPT = """
+        (function () {
+          if (window.__systemBarsHooked) return;
+          window.__systemBarsHooked = true;
+          function parse(c) {
+            var m = c && c.match(/rgba?\(([^)]+)\)/);
+            if (!m) return null;
+            var p = m[1].split(',').map(function (s) { return parseFloat(s); });
+            var a = p.length > 3 ? p[3] : 1;
+            if (!(a > 0.5)) return null;
+            return ((p[0] & 255) << 16) | ((p[1] & 255) << 8) | (p[2] & 255);
+          }
+          function colorAt(y) {
+            var x = Math.round(window.innerWidth / 2);
+            var list = document.elementsFromPoint ? document.elementsFromPoint(x, y) : [];
+            for (var i = 0; i < list.length; i++) {
+              var c = parse(getComputedStyle(list[i]).backgroundColor);
+              if (c !== null) return c;
+            }
+            var fb = parse(getComputedStyle(document.body).backgroundColor);
+            if (fb === null) fb = parse(getComputedStyle(document.documentElement).backgroundColor);
+            return fb;
+          }
+          function tick() {
+            try {
+              var top = colorAt(1);
+              var bottom = colorAt(window.innerHeight - 2);
+              if (top !== null) NativeSystemBars.setColors(top, bottom !== null ? bottom : top);
+            } catch (e) {}
+          }
+          tick();
+          setInterval(tick, 500);
+        })();
+        """
+            }
+        }
+        KT
+    - name: 把新代码接到 App 里
+      run: |
+        python3 - <<'PY'
+        import re, sys
+        path = "src/app/src/main/java/org/jellyfin/mobile/webapp/WebViewFragment.kt"
+        lines = open(path, encoding="utf-8").read().split("\n")
+
+        def insert(match, new_line, before):
+            hits = [i for i, l in enumerate(lines) if l.strip() == match]
+            if len(hits) != 1:
+                sys.exit(f"找不到要修改的位置: {match} (找到 {len(hits)} 处)")
+            i = hits[0]
+            indent = re.match(r"\s*", lines[i]).group(0)
+            lines.insert(i if before else i + 1, indent + new_line)
+
+        insert("webView.initialize()",
+               'webView.addJavascriptInterface(SystemBarColorBridge(requireActivity(), webView), "NativeSystemBars")',
+               before=True)
+        insert("webView.fadeIn()",
+               "webView.evaluateJavascript(SystemBarColorBridge.SCRIPT, null)",
+               before=False)
+        open(path, "w", encoding="utf-8").write("\n".join(lines))
+        print("修改完成")
+        PY
+    - name: 准备 Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version-file: src/.tools-versions
+    - name: 准备 Gradle
+      uses: gradle/actions/setup-gradle@v4
+    - name: 编译安装包
+      working-directory: src
+      run: ./gradlew assembleProprietaryDebug
+    - name: 收集安装包
+      run: |
+        mkdir -p out
+        find src/app/build/outputs -iname "*.apk" -exec cp "{}" out/ \;
+        ls -la out
+    - name: 上传安装包
+      uses: actions/upload-artifact@v4
+      with:
+        name: jellyfin-沉浸状态栏
+        if-no-files-found: error
+        path: out/
