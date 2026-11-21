@@ -176,6 +176,10 @@ jobs:
         (function () {
           if (window.__systemBarsHooked) return;
           window.__systemBarsHooked = true;
+          var qwStyle = document.createElement('style');
+          qwStyle.id = 'qw-header-style';
+          qwStyle.textContent = '.skinHeader-withBackground:not(.semiTransparent):not(.osdHeader){background:var(--jf-palette-background-default,#d5e9f2)!important;box-shadow:none!important}';
+          (document.head || document.documentElement).appendChild(qwStyle);
           function parse(c) {
             var m = c && c.match(/rgba?\(([^)]+)\)/);
             if (!m) return null;
