@@ -240,9 +240,27 @@ jobs:
         java-version-file: src/.tools-versions
     - name: 准备 Gradle
       uses: gradle/actions/setup-gradle@v4
+    - name: 使用固定签名
+      env:
+        KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+      run: |
+        if [ -z "$KEYSTORE_B64" ]; then echo "没有找到签名钥匙 DEBUG_KEYSTORE_B64"; exit 1; fi
+        for d in "$HOME/.android" "${ANDROID_USER_HOME:-}"; do
+          if [ -n "$d" ]; then
+            mkdir -p "$d"
+            echo "$KEYSTORE_B64" | base64 -d > "$d/debug.keystore"
+          fi
+        done
+        ls -la "$HOME/.android"
     - name: 编译安装包
       working-directory: src
       run: ./gradlew assembleProprietaryDebug
+    - name: 检查签名是否为固定钥匙
+      run: |
+        APK=$(find src/app/build/outputs -iname "*.apk" | head -n 1)
+        APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
+        "$APKSIGNER" verify --print-certs "$APK" | tee certs.txt
+        grep -qi "f43e3ca72db557b8ac4e4888b51e727ce3a7d5ff309f9392b01316796a32f43d" certs.txt || { echo "签名不是固定钥匙"; exit 1; }
     - name: 收集安装包
       run: |
         mkdir -p out
